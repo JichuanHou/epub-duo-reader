@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>EPUB Duo Reader</title>
+    <link rel="stylesheet" href="styles/main.css" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Merriweather:wght@400;700&family=Source+Code+Pro:wght@400;600&display=swap"
+      rel="stylesheet"
+    />
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/epubjs@0.3/dist/epub.min.js"></script>
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="top-bar">
+        <div class="brand">
+          <button
+            id="layoutToggle"
+            class="icon-button"
+            aria-label="Toggle focus mode"
+            aria-pressed="false"
+          >
+            <span></span>
+            <span></span>
+            <span></span>
+          </button>
+          <div>
+            <p class="eyebrow">Simple EPUB Reader</p>
+            <h1>EPUB Duo Reader</h1>
+          </div>
+        </div>
+        <div class="top-controls">
+          <label class="control select-control">
+            <span>Typeface</span>
+            <select id="fontFamily" aria-label="Typeface selector"></select>
+          </label>
+          <div class="control size-control">
+            <span>Text size</span>
+            <div class="size-buttons">
+              <button id="fontSmaller" type="button">A-</button>
+              <button id="fontLarger" type="button">A+</button>
+            </div>
+          </div>
+          <button id="translateBtn" type="button" class="pill-button primary">Translate</button>
+          <button id="openSettingsBtn" type="button" class="pill-button secondary">Settings</button>
+          <button id="openLibraryBtn" type="button" class="pill-button ghost">Library</button>
+          <label class="file-button">
+            <input id="fileInput" type="file" accept=".epub" />
+            <span>Open Book</span>
+          </label>
+        </div>
+      </header>
+
+      <div class="workspace">
+        <aside class="toc-panel" aria-label="Chapters">
+          <div class="panel-header">
+            <p>Chapters</p>
+          </div>
+          <ul id="tocList" class="chapter-list">
+            <li class="placeholder">Load a book to see its chapters.</li>
+          </ul>
+        </aside>
+
+      <section id="readingArea" class="reading-area" aria-label="Book viewer">
+        <div class="reader-stage">
+          <div id="readerLoading" class="reader-loading hidden" aria-live="polite">
+            <div class="loader-card">
+              <div class="spinner" aria-hidden="true"></div>
+              <p id="readerLoadingText">Preparing book…</p>
+            </div>
+          </div>
+          <div id="dropZone" class="drop-zone">
+            <p>Drop EPUB file here</p>
+          </div>
+          <div id="viewer" class="viewer"></div>
+            <div id="readerControls" class="reader-controls">
+              <button id="prevBtn" type="button" aria-label="Previous section">&#8592;</button>
+              <div class="progress">
+                <span id="progressLabel">0%</span>
+                <input id="progressSlider" type="range" min="0" max="100" value="0" disabled />
+              </div>
+              <button id="nextBtn" type="button" aria-label="Next section">&#8594;</button>
+            </div>
+          </div>
+          <aside class="translation-panel" aria-label="Translation">
+            <header class="translation-header">
+              <p class="eyebrow">Duo-Language</p>
+              <h2>Translated Page</h2>
+              <p class="panel-desc">Compare the translated spread side by side.</p>
+            </header>
+            <div id="translationStatus" class="translation-status">No translation yet.</div>
+            <div id="translationOutput" class="translation-output" aria-live="polite"></div>
+          </aside>
+        </section>
+      </div>
+    </div>
+
+    <div id="translationSettings" class="settings-dialog" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
+      <div class="settings-card">
+        <header>
+          <h3 id="settingsTitle">Translation Settings</h3>
+          <button type="button" id="closeSettingsBtn" class="close-btn" aria-label="Close settings">×</button>
+        </header>
+        <label class="control select-control">
+          <span>Target language</span>
+          <select id="languageSelect" aria-label="Target language"></select>
+        </label>
+        <label class="control select-control">
+          <span>Provider</span>
+          <select id="providerSelect" aria-label="Translation provider"></select>
+        </label>
+        <label class="control api-endpoint-control">
+          <span>Model</span>
+          <input id="modelInput" type="text" placeholder="gpt-4o-mini" autocomplete="off" />
+        </label>
+        <label class="control api-endpoint-control">
+          <span>API endpoint</span>
+          <input
+            id="apiEndpointInput"
+            type="url"
+            placeholder="https://api.openai.com/v1/chat/completions"
+            autocomplete="off"
+          />
+        </label>
+        <label class="control api-key-control">
+          <span>API key</span>
+          <input id="apiKeyInput" type="password" placeholder="sk-..." autocomplete="off" />
+        </label>
+      </div>
+    </div>
+
+    <div id="libraryOverlay" class="library-overlay visible" role="dialog" aria-modal="true" aria-labelledby="libraryTitle">
+      <div class="library-card">
+        <header class="library-header">
+          <div>
+            <p class="eyebrow">Welcome back</p>
+            <h2 id="libraryTitle">My Library</h2>
+          </div>
+          <button id="closeLibraryBtn" type="button" class="close-btn" aria-label="Hide library">×</button>
+        </header>
+        <div id="libraryEmpty" class="library-empty">
+          <p>Your shelf is empty. Add an EPUB to start reading.</p>
+          <button id="addLibraryBookBtn" type="button" class="translate-btn">Add Book</button>
+        </div>
+        <ul id="libraryList" class="library-list"></ul>
+        <div class="library-actions">
+          <button id="addLibraryBookFooter" type="button" class="pill-button outline">Add Book</button>
+        </div>
+      </div>
+    </div>
+
+    <script src="scripts/main.js" type="module"></script>
+  </body>
+</html>
