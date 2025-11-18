@@ -281,14 +281,6 @@ body.dark {
 .reader-loading {
   position: absolute;
   inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: rgba(255, 255, 255, 0.9);
-  z-index: 5;
-}
-
-.reader-loading.hidden {
   display: none;
 }
 
@@ -647,6 +639,30 @@ body.dark {
   gap: 0.35rem;
   cursor: pointer;
   transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.library-entry-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.library-delete-btn {
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 0.15rem;
+  border-radius: 999px;
+  line-height: 1;
+  transition: color 0.2s ease, background 0.2s ease;
+}
+
+.library-delete-btn:hover,
+.library-delete-btn:focus-visible {
+  color: #d7263d;
+  background: rgba(215, 38, 61, 0.1);
 }
 
 .library-entry:hover {
