@@ -77,25 +77,29 @@
             <p>Drop EPUB file here</p>
           </div>
           <div id="viewer" class="viewer"></div>
-            <div id="readerControls" class="reader-controls">
-              <button id="prevBtn" type="button" aria-label="Previous section">&#8592;</button>
-              <div class="progress">
-                <span id="progressLabel">0%</span>
-                <input id="progressSlider" type="range" min="0" max="100" value="0" disabled />
-              </div>
-              <button id="nextBtn" type="button" aria-label="Next section">&#8594;</button>
+          <div id="readerControls" class="reader-controls">
+            <button id="prevBtn" type="button" aria-label="Previous section">&#8592;</button>
+            <div class="progress">
+              <span id="progressLabel">0%</span>
+              <input id="progressSlider" type="range" min="0" max="100" value="0" disabled />
             </div>
+            <button id="nextBtn" type="button" aria-label="Next section">&#8594;</button>
           </div>
-          <aside class="translation-panel" aria-label="Translation">
-            <header class="translation-header">
-              <p class="eyebrow">Duo-Language</p>
-              <h2>Translated Page</h2>
-              <p class="panel-desc">Compare the translated spread side by side.</p>
-            </header>
-            <div id="translationStatus" class="translation-status">No translation yet.</div>
-            <div id="translationOutput" class="translation-output" aria-live="polite"></div>
-          </aside>
-        </section>
+        <div id="parallelView" class="parallel-view hidden" aria-live="polite">
+          <div class="parallel-header" aria-hidden="true">
+            <span>Original</span>
+            <span>Translated</span>
+          </div>
+          <div
+            id="parallelRows"
+            class="parallel-rows"
+            role="group"
+            aria-label="Original paragraphs with translations"
+          ></div>
+        </div>
+        </div>
+        <div id="translationStatus" class="translation-status sr-only">No translation yet.</div>
+      </section>
       </div>
     </div>
 

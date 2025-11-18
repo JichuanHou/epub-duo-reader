@@ -52,8 +52,21 @@ interface Book {
     cfiFromPercentage(percentage: number): string;
   };
   destroy(): void;
+  load(path: string): Promise<Document>;
+  spine?: {
+    get(target: string | number): SpineSection | null | undefined;
+  };
 }
 
 interface Window {
   ePub(input: ArrayBuffer | string, options?: Record<string, unknown>): Book;
+}
+
+interface SpineSection {
+  href: string;
+  index: number;
+  document?: Document;
+  load(request?: (path: string) => Promise<Document>): Promise<Element>;
+  next?: () => SpineSection | null | undefined;
+  prev?: () => SpineSection | null | undefined;
 }

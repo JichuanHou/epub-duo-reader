@@ -20,7 +20,8 @@ const apiEndpointInput = getElement<HTMLInputElement>('apiEndpointInput');
 const apiKeyInput = getElement<HTMLInputElement>('apiKeyInput');
 const translateBtn = getElement<HTMLButtonElement>('translateBtn');
 const translationStatus = getElement<HTMLDivElement>('translationStatus');
-const translationOutput = getElement<HTMLDivElement>('translationOutput');
+const parallelView = getElement<HTMLDivElement>('parallelView');
+const parallelRows = getElement<HTMLDivElement>('parallelRows');
 const settingsDialog = getElement<HTMLDivElement>('translationSettings');
 const openSettingsBtn = getElement<HTMLButtonElement>('openSettingsBtn');
 const closeSettingsBtn = getElement<HTMLButtonElement>('closeSettingsBtn');
@@ -38,6 +39,7 @@ let sliderInteracting = false;
 let controlsVisible = false;
 let translationAbortController: AbortController | null = null;
 const sessionTranslationCache = new Map<string, string>();
+const chapterTextCache = new Map<string, string>();
 const scrollSyncCleanup: Array<() => void> = [];
 
 const state: ReaderState = {
@@ -57,6 +59,9 @@ const state: ReaderState = {
   currentChapterId: null,
   lastScrollPercent: 0,
   focusMode: false,
+  lastOriginalParagraphs: [],
+  autoTranslateEnabled: false,
+  chapterIndex: [],
 };
 
 const FONT_PRESETS: FontPreset[] = [
@@ -139,6 +144,15 @@ interface ReaderState {
   currentChapterId: string | null;
   lastScrollPercent: number;
   focusMode: boolean;
+  lastOriginalParagraphs: string[];
+  autoTranslateEnabled: boolean;
+  chapterIndex: ChapterNavEntry[];
+}
+
+interface ChapterNavEntry {
+  id: string;
+  href: string;
+  originalHref: string;
 }
 
 interface FontPreset {
@@ -194,14 +208,17 @@ function destroyBook(): void {
   state.currentHref = '';
   translationAbortController?.abort();
   translationAbortController = null;
+  chapterTextCache.clear();
   while (scrollSyncCleanup.length) {
     const cleanup = scrollSyncCleanup.pop();
     cleanup?.();
   }
+  hideParallelView();
+  state.lastOriginalParagraphs = [];
   progressSlider.value = '0';
   progressSlider.disabled = true;
   progressLabel.textContent = '0%';
-  translationOutput.textContent = '';
+  parallelRows.textContent = '';
   updateTranslationStatus('No translation yet.');
   setDropZoneVisibility(true);
   if (dropZoneLabel) {
@@ -209,6 +226,7 @@ function destroyBook(): void {
   }
   state.libraryEntryId = null;
   state.pendingDisplayCfi = null;
+  state.chapterIndex = [];
   updateLibraryCloseAvailability();
   resetChapterList();
 }
@@ -307,22 +325,221 @@ function populateToc(): void {
   }
 
   state.toc.forEach((item) => addTocEntry(item));
+  rebuildChapterIndex();
+}
+
+function rebuildChapterIndex(): void {
+  const flattened: ChapterNavEntry[] = [];
+  const walk = (items: TocItem[]): void => {
+    items.forEach((item) => {
+      const resolvedHref = normalizeTocHref(item.href) ?? item.href ?? '';
+      if (resolvedHref) {
+        const id = extractChapterId(resolvedHref) ?? resolvedHref;
+        flattened.push({
+          id,
+          href: resolvedHref,
+          originalHref: item.href ?? resolvedHref,
+        });
+      }
+      if (item.subitems?.length) {
+        walk(item.subitems);
+      }
+    });
+  };
+  if (state.toc.length) {
+    walk(state.toc);
+  }
+  state.chapterIndex = flattened;
+}
+
+function normalizeTocHref(href: string | null | undefined): string | null {
+  if (!href) return null;
+  const trimmed = href.trim();
+  if (!trimmed) return null;
+  const [path, hash] = trimmed.split('#');
+  let resolvedPath = path || trimmed;
+  try {
+    const section = state.book?.spine?.get?.(resolvedPath);
+    if (section?.href) {
+      resolvedPath = section.href;
+    }
+  } catch (error) {
+    console.warn('Unable to resolve TOC href', href, error);
+  }
+  if (!resolvedPath) {
+    return null;
+  }
+  return hash ? `${resolvedPath}#${hash}` : resolvedPath;
+}
+
+function buildChapterDisplayAttempts(primary?: string | null, fallback?: string | null): string[] {
+  const attempts: string[] = [];
+  const addAttempt = (value: string | null | undefined): void => {
+    const trimmed = value?.trim();
+    if (trimmed && !attempts.includes(trimmed)) {
+      attempts.push(trimmed);
+    }
+  };
+  const normalizedPrimary = primary ? normalizeTocHref(primary) ?? primary : null;
+  const normalizedFallback =
+    fallback && fallback !== primary ? normalizeTocHref(fallback) ?? fallback : null;
+  addAttempt(normalizedPrimary);
+  addAttempt(normalizedFallback);
+  addAttempt(primary);
+  if (fallback && fallback !== primary) {
+    addAttempt(fallback);
+  }
+  attempts.slice().forEach((existing) => {
+    addAttempt(extractChapterId(existing));
+  });
+  return attempts;
+}
+
+async function ensureRenditionHasContent(retries = 3, delay = 60): Promise<boolean> {
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    const hasContent = Boolean(state.rendition?.getContents?.()?.length);
+    if (hasContent) {
+      return true;
+    }
+    await new Promise((resolve) => setTimeout(resolve, delay));
+  }
+  return Boolean(state.rendition?.getContents?.()?.length);
+}
+
+async function displayChapterTarget(target: string, fallback?: string | null): Promise<void> {
+  if (!state.rendition) return;
+  const attempts = buildChapterDisplayAttempts(target, fallback);
+  if (!attempts.length) return;
+  for (const href of attempts) {
+    try {
+      await state.rendition.display(href);
+      const hasContent = await ensureRenditionHasContent();
+      if (hasContent) {
+        return;
+      }
+    } catch (error) {
+      console.warn('Unable to display section', href, error);
+    }
+  }
+  console.warn('Unable to render chapter for target', target);
+}
+
+function getSpineSection(target: string | null): SpineSection | null {
+  if (!target || !state.book?.spine?.get) return null;
+  const normalized = normalizeTocHref(target) ?? target;
+  return state.book.spine.get(normalized) ?? state.book.spine.get(target) ?? null;
+}
+
+function collectParagraphsFromBody(body: Element): string[] {
+  const blocks = Array.from(
+    body.querySelectorAll('p, li, blockquote, section, article, pre, h1, h2, h3, h4, h5, h6'),
+  )
+    .map((node) => node.textContent?.replace(/\s+/g, ' ').trim())
+    .filter((value): value is string => Boolean(value));
+  if (blocks.length) {
+    return blocks;
+  }
+  const fallback = body.textContent?.replace(/\s+/g, ' ').trim();
+  return fallback ? [fallback] : [];
+}
+
+async function getChapterTextContent(target: string | null): Promise<{ text: string; paragraphs: string[] } | null> {
+  if (!target || !state.book?.spine?.get) return null;
+  const normalized = normalizeTocHref(target) ?? target;
+  if (!normalized) return null;
+  if (chapterTextCache.has(normalized)) {
+    const cachedText = chapterTextCache.get(normalized) ?? '';
+    const paragraphs = splitIntoParagraphs(cachedText);
+    return { text: cachedText, paragraphs };
+  }
+  const section = getSpineSection(normalized);
+  if (!section) return null;
+  const request = state.book.load?.bind(state.book);
+  try {
+    await section.load(request);
+  } catch (error) {
+    console.warn('Unable to load section contents for translation', normalized, error);
+    return null;
+  }
+  const body = section.document?.querySelector('body');
+  if (!body) return null;
+  const paragraphs = collectParagraphsFromBody(body);
+  if (!paragraphs.length) return null;
+  const text = paragraphs.join('\n\n');
+  chapterTextCache.set(normalized, text);
+  return { text, paragraphs };
+}
+
+function getCurrentChapterReference(): string | null {
+  const location = (state.rendition as any)?.currentLocation?.() ?? null;
+  const currentCfi = location?.start?.cfi ?? null;
+  return state.currentChapterId ?? extractChapterId(currentCfi) ?? state.currentHref ?? null;
+}
+
+function getAdjacentChapterHref(direction: 'next' | 'prev'): string | null {
+  const current = getCurrentChapterReference();
+  const section = getSpineSection(current);
+  if (!section) return null;
+  const neighbor = direction === 'next' ? section.next?.() : section.prev?.();
+  return neighbor?.href ?? null;
+}
+
+async function navigateToChapterOffset(offset: number): Promise<void> {
+  if (!state.chapterIndex.length) return;
+  const currentRef = getCurrentChapterReference();
+  const normalized =
+    normalizeTocHref(currentRef ?? '') ?? currentRef ?? state.chapterIndex[0]?.href ?? null;
+  const currentId = normalized ? extractChapterId(normalized) ?? normalized : null;
+  let currentIndex = currentId
+    ? state.chapterIndex.findIndex((entry) => entry.id === currentId)
+    : -1;
+  if (currentIndex === -1) {
+    currentIndex = offset > 0 ? -1 : state.chapterIndex.length;
+  }
+  let targetIndex = currentIndex + offset;
+  targetIndex = Math.min(state.chapterIndex.length - 1, Math.max(0, targetIndex));
+  if (targetIndex === currentIndex || targetIndex < 0 || targetIndex >= state.chapterIndex.length) {
+    return;
+  }
+  const targetChapter = state.chapterIndex[targetIndex];
+  await navigateToChapterEntry(targetChapter);
+}
+
+async function navigateToChapterEntry(entry: ChapterNavEntry): Promise<void> {
+  if (!entry) return;
+  state.currentHref = entry.href;
+  state.currentChapterId = entry.id;
+  highlightChapter(entry.id);
+  try {
+    await displayChapterTarget(entry.href, entry.originalHref);
+  } catch (error) {
+    console.error('Unable to display section from shortcut', error);
+  }
+  await showCachedTranslationForCurrentLocation();
 }
 
 function addTocEntry(item: TocItem, depth = 0): void {
   const li = document.createElement('li');
   const button = document.createElement('button');
   button.type = 'button';
-  button.dataset.href = item.href;
+  const resolvedTarget = normalizeTocHref(item.href) ?? item.href ?? '';
+  const highlightTarget = extractChapterId(resolvedTarget) ?? resolvedTarget;
+  button.dataset.href = highlightTarget ?? '';
   button.textContent = item.label?.trim() || 'Untitled section';
   button.style.paddingLeft = `${0.75 + depth * 0.75}rem`;
+  if (!resolvedTarget) {
+    button.disabled = true;
+    button.setAttribute('aria-disabled', 'true');
+    button.title = 'This entry has no readable section';
+  }
   button.addEventListener('click', async () => {
-    if (!state.rendition) return;
-    state.currentHref = item.href;
-    state.currentChapterId = extractChapterId(item.href);
-    highlightChapter(item.href);
+    if (!state.rendition || !resolvedTarget) return;
+    const highlightValue = highlightTarget ?? extractChapterId(resolvedTarget) ?? resolvedTarget;
+    state.currentHref = highlightValue;
+    state.currentChapterId = extractChapterId(highlightValue) ?? highlightValue;
+    highlightChapter(highlightValue);
     try {
-      await state.rendition.display(item.href);
+      await displayChapterTarget(resolvedTarget, item.href);
     } catch (error) {
       console.error('Unable to display section', error);
     }
@@ -453,6 +670,7 @@ function setupEventListeners(): void {
   });
 
   window.addEventListener('keydown', handleArrowNavigation);
+  window.addEventListener('keydown', handleChapterShortcut);
 
   setupDragAndDrop();
   setupReaderControlsVisibility();
@@ -474,6 +692,24 @@ function setupEventListeners(): void {
     if (!id) return;
     void loadBookFromLibrary(id);
   });
+}
+
+function isEditableElement(element: Element | null): boolean {
+  if (!element) return false;
+  const tagName = element.tagName;
+  if (!tagName) return false;
+  if (['INPUT', 'TEXTAREA', 'SELECT'].includes(tagName)) return true;
+  if ((element as HTMLElement).isContentEditable) return true;
+  return false;
+}
+
+function handleChapterShortcut(event: KeyboardEvent): void {
+  if (!state.chapterIndex.length) return;
+  if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+  if (isEditableElement(event.target as Element | null)) return;
+  event.preventDefault();
+  const offset = event.key === 'ArrowRight' ? 1 : -1;
+  void navigateToChapterOffset(offset);
 }
 
 function populateFontOptions(): void {
@@ -720,6 +956,20 @@ async function savePersistentTranslation(bookId: string, key: string, text: stri
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error ?? new Error('Failed to save translation cache'));
   });
+}
+
+async function readCachedTranslation(cacheKey: string, sessionKey: string): Promise<string | null> {
+  if (sessionTranslationCache.has(sessionKey)) {
+    return sessionTranslationCache.get(sessionKey) ?? null;
+  }
+  if (!state.libraryEntryId) {
+    return null;
+  }
+  const cached = await loadPersistentTranslation(state.libraryEntryId, cacheKey);
+  if (cached) {
+    sessionTranslationCache.set(sessionKey, cached);
+  }
+  return cached ?? null;
 }
 
 async function loadBookFromLibrary(id: string): Promise<void> {
@@ -975,6 +1225,7 @@ async function handleRelocated(location: any): Promise<void> {
   }
   const cfi = location.start?.cfi;
   if (!state.book || !cfi || !state.locationsReady) return;
+  hideParallelView();
   const percent = Math.round(state.book.locations.percentageFromCfi(cfi) * 100);
   updateProgress(percent);
   state.currentChapterId = extractChapterId(href || cfi);
@@ -983,6 +1234,9 @@ async function handleRelocated(location: any): Promise<void> {
     updateLibraryEntryProgress(state.libraryEntryId, percent);
   }
   await showCachedTranslationForCurrentLocation();
+  if (state.autoTranslateEnabled) {
+    void autoTranslateUpcomingChapter();
+  }
 }
 
 function updateProgress(percent: number): void {
@@ -1018,23 +1272,52 @@ function updateTranslationStatus(message: string, isError = false): void {
   translationStatus.dataset.state = isError ? 'error' : 'ok';
 }
 
-function renderTranslationText(text: string | null): void {
-  translationOutput.innerHTML = '';
-  if (!text) return;
-  const paragraphs = text
+function splitIntoParagraphs(text: string | null): string[] {
+  if (!text) return [];
+  return text
     .split(/\n{2,}/)
     .map((paragraph) => paragraph.trim())
     .filter(Boolean);
-  if (!paragraphs.length) {
-    translationOutput.textContent = '';
+}
+
+function renderParallelColumns(originalParagraphs: string[], translationText: string | null): void {
+  if (!translationText) {
+    hideParallelView();
     return;
   }
-  paragraphs.forEach((paragraph) => {
-    const element = document.createElement('p');
-    element.textContent = paragraph.replace(/\n/g, ' ');
-    translationOutput.appendChild(element);
-  });
+  const translatedParagraphs = splitIntoParagraphs(translationText);
+  parallelRows.innerHTML = '';
+  const max = Math.max(originalParagraphs.length, translatedParagraphs.length);
+  for (let i = 0; i < max; i += 1) {
+    const row = document.createElement('div');
+    row.className = 'parallel-row';
+
+    const originalWrapper = document.createElement('div');
+    originalWrapper.className = 'parallel-cell original';
+    const originalElement = document.createElement('p');
+    originalElement.textContent = originalParagraphs[i] ?? '';
+    originalWrapper.appendChild(originalElement);
+    row.appendChild(originalWrapper);
+
+    const translatedWrapper = document.createElement('div');
+    translatedWrapper.className = 'parallel-cell translated';
+    const translatedElement = document.createElement('p');
+    translatedElement.textContent = translatedParagraphs[i] ?? '';
+    translatedWrapper.appendChild(translatedElement);
+    row.appendChild(translatedWrapper);
+
+    parallelRows.appendChild(row);
+  }
+  parallelView.classList.remove('hidden');
+  viewer.classList.add('hidden');
   scrollTranslationToPercent(state.lastScrollPercent);
+}
+
+function renderTranslationText(text: string | null): void {
+  if (!state.lastOriginalParagraphs.length) {
+    state.lastOriginalParagraphs = splitIntoParagraphs(extractVisibleText());
+  }
+  renderParallelColumns(state.lastOriginalParagraphs, text);
 }
 
 function setTranslating(active: boolean): void {
@@ -1042,7 +1325,7 @@ function setTranslating(active: boolean): void {
   if (active) {
     translateBtn.textContent = 'Translating...';
   } else {
-    translateBtn.textContent = 'Translate current view';
+    translateBtn.textContent = 'Translate chapter';
   }
 }
 
@@ -1051,12 +1334,23 @@ function setDropZoneVisibility(visible: boolean): void {
 }
 
 function scrollTranslationToPercent(percent: number): void {
-  const max = translationOutput.scrollHeight - translationOutput.clientHeight;
-  if (max <= 0) {
-    translationOutput.scrollTop = 0;
+  if (parallelView.classList.contains('hidden')) {
+    parallelView.scrollTop = 0;
     return;
   }
-  translationOutput.scrollTop = (Math.max(0, Math.min(100, percent)) / 100) * max;
+  const max = parallelView.scrollHeight - parallelView.clientHeight;
+  if (max <= 0) {
+    parallelView.scrollTop = 0;
+    return;
+  }
+  const clamped = Math.max(0, Math.min(100, percent));
+  parallelView.scrollTop = (clamped / 100) * max;
+}
+
+function hideParallelView(): void {
+  parallelView.classList.add('hidden');
+  viewer.classList.remove('hidden');
+  parallelRows.innerHTML = '';
 }
 
 function bindScrollSync(content: any): void {
@@ -1083,64 +1377,63 @@ function closeSettingsDialog(): void {
   settingsDialog.classList.remove('visible');
 }
 
-async function translateCurrentView(): Promise<void> {
-  if (!state.rendition) {
-    updateTranslationStatus('Open a book to translate.', true);
-    return;
-  }
-  const apiKey = apiKeyInput.value.trim();
-  if (!apiKey) {
-    updateTranslationStatus('Enter your API key to translate.', true);
-    return;
-  }
-  const sourceText = extractVisibleText();
-  if (!sourceText) {
-    updateTranslationStatus('Unable to find text in the current view.', true);
-    return;
-  }
+interface ChapterTranslationResult {
+  success: boolean;
+  fromCache: boolean;
+}
 
-  let endpoint = OPENAI_ENDPOINT;
-  if (state.provider === 'custom') {
-    endpoint = apiEndpointInput.value.trim() || state.customEndpoint.trim();
-    if (!endpoint) {
-      updateTranslationStatus('Enter an API endpoint for the custom provider.', true);
-      return;
+interface ChapterTranslationOptions {
+  showResult: boolean;
+  endpoint: string;
+  apiKey: string;
+  model: string;
+  providerLabel: string;
+  languageLabel: string;
+  signal: AbortSignal;
+}
+
+interface ChapterTranslationBatchOptions {
+  announceStatus: boolean;
+  triggeredByUser: boolean;
+}
+
+async function translateChapterTarget(
+  targetHref: string,
+  options: ChapterTranslationOptions,
+): Promise<ChapterTranslationResult> {
+  const normalizedTarget = normalizeTocHref(targetHref) ?? targetHref;
+  const chapterId = extractChapterId(normalizedTarget) ?? normalizedTarget ?? null;
+  if (!chapterId) {
+    if (options.showResult) {
+      updateTranslationStatus('Unable to determine the current chapter for translation.', true);
     }
-    state.customEndpoint = endpoint;
-    persistProviderSettings();
+    return { success: false, fromCache: false };
   }
 
-  const location = (state.rendition as any)?.currentLocation?.() ?? null;
-  const currentCfi = location?.start?.cfi ?? state.currentHref ?? null;
-  const chapterId = state.currentChapterId ?? extractChapterId(currentCfi);
-  const languageLabel = getLanguageLabel(state.targetLanguage);
-  const model = state.customModel.trim() || DEFAULT_MODEL;
-  const providerLabel = getProviderLabel(state.provider);
-  const cacheKey = buildTranslationCacheKey(chapterId, state.targetLanguage, state.provider, model);
+  const chapterText = await getChapterTextContent(normalizedTarget);
+  if (!chapterText || !chapterText.text) {
+    if (options.showResult) {
+      updateTranslationStatus('Unable to read text from this chapter for translation.', true);
+    }
+    return { success: false, fromCache: false };
+  }
+
+  if (options.showResult) {
+    state.lastOriginalParagraphs = chapterText.paragraphs;
+  }
+
+  const cacheKey = buildTranslationCacheKey(chapterId, state.targetLanguage, state.provider, options.model);
   const sessionKey = `${state.libraryEntryId ?? 'session'}::${cacheKey}`;
-
-  if (sessionTranslationCache.has(sessionKey)) {
-    renderTranslationText(sessionTranslationCache.get(sessionKey) ?? null);
-    updateTranslationStatus(`Loaded cached translation via ${providerLabel}.`);
-    return;
-  }
-  if (state.libraryEntryId) {
-    const cached = await loadPersistentTranslation(state.libraryEntryId, cacheKey);
-    if (cached) {
-      sessionTranslationCache.set(sessionKey, cached);
-      renderTranslationText(cached);
-      updateTranslationStatus(`Loaded cached translation via ${providerLabel}.`);
-      return;
+  const cached = await readCachedTranslation(cacheKey, sessionKey);
+  if (cached) {
+    if (options.showResult) {
+      renderParallelColumns(chapterText.paragraphs, cached);
     }
+    return { success: true, fromCache: true };
   }
-
-  translationAbortController?.abort();
-  translationAbortController = new AbortController();
-  setTranslating(true);
-  updateTranslationStatus(`Translating via ${providerLabel}...`);
 
   const payload = {
-    model,
+    model: options.model,
     temperature: 0.2,
     messages: [
       {
@@ -1150,20 +1443,20 @@ async function translateCurrentView(): Promise<void> {
       },
       {
         role: 'user',
-        content: `Translate the following passage into ${languageLabel}.\n\n${sourceText}`,
+        content: `Translate the following passage into ${options.languageLabel}.\n\n${chapterText.text}`,
       },
     ],
   };
 
   try {
-    const response = await fetch(endpoint, {
+    const response = await fetch(options.endpoint, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${apiKey}`,
+        Authorization: `Bearer ${options.apiKey}`,
       },
       body: JSON.stringify(payload),
-      signal: translationAbortController.signal,
+      signal: options.signal,
     });
     if (!response.ok) {
       throw new Error(`Translation request failed with status ${response.status}`);
@@ -1173,24 +1466,136 @@ async function translateCurrentView(): Promise<void> {
     if (!translatedText) {
       throw new Error('No translation returned');
     }
-    renderTranslationText(translatedText);
+    if (options.showResult) {
+      renderParallelColumns(chapterText.paragraphs, translatedText);
+    }
     sessionTranslationCache.set(sessionKey, translatedText);
     if (state.libraryEntryId) {
       await savePersistentTranslation(state.libraryEntryId, cacheKey, translatedText);
     }
-    updateTranslationStatus(`Translated to ${languageLabel} via ${providerLabel} (${model}).`);
+    return { success: true, fromCache: false };
   } catch (error) {
     if ((error as DOMException).name === 'AbortError') {
-      return;
+      return { success: false, fromCache: false };
     }
-    console.error('Translation failed', error);
-    updateTranslationStatus('Translation failed. See console for details.', true);
-  } finally {
-    setTranslating(false);
+    if (options.showResult) {
+      console.error('Translation failed', error);
+      updateTranslationStatus('Translation failed. See console for details.', true);
+    } else {
+      console.warn('Prefetch translation failed', targetHref, error);
+    }
+    return { success: false, fromCache: false };
   }
 }
 
+async function runChapterTranslationBatch(options: ChapterTranslationBatchOptions): Promise<void> {
+  if (!state.rendition || !state.book) {
+    if (options.announceStatus) {
+      updateTranslationStatus('Open a book to translate.', true);
+    }
+    return;
+  }
+  const apiKey = apiKeyInput.value.trim();
+  if (!apiKey) {
+    if (options.announceStatus) {
+      updateTranslationStatus('Enter your API key to translate.', true);
+    }
+    return;
+  }
+
+  let endpoint = OPENAI_ENDPOINT;
+  if (state.provider === 'custom') {
+    endpoint = apiEndpointInput.value.trim() || state.customEndpoint.trim();
+    if (!endpoint) {
+      if (options.announceStatus) {
+        updateTranslationStatus('Enter an API endpoint for the custom provider.', true);
+      }
+      return;
+    }
+    state.customEndpoint = endpoint;
+    persistProviderSettings();
+  }
+
+  const currentChapterHref = getCurrentChapterReference();
+  if (!currentChapterHref) {
+    if (options.announceStatus) {
+      updateTranslationStatus('Navigate to a chapter before translating.', true);
+    }
+    return;
+  }
+
+  const nextChapterHref = getAdjacentChapterHref('next');
+  const languageLabel = getLanguageLabel(state.targetLanguage);
+  const model = state.customModel.trim() || DEFAULT_MODEL;
+  const providerLabel = getProviderLabel(state.provider);
+  const batchLabel = nextChapterHref ? 'current and next chapters' : 'current chapter';
+
+  translationAbortController?.abort();
+  translationAbortController = new AbortController();
+  if (options.triggeredByUser) {
+    state.autoTranslateEnabled = true;
+    setTranslating(true);
+  }
+  if (options.announceStatus) {
+    updateTranslationStatus(`Translating ${batchLabel} via ${providerLabel}...`);
+  }
+
+  const tasks: Array<Promise<ChapterTranslationResult>> = [
+    translateChapterTarget(currentChapterHref, {
+      showResult: true,
+      endpoint,
+      apiKey,
+      model,
+      providerLabel,
+      languageLabel,
+      signal: translationAbortController.signal,
+    }),
+  ];
+
+  if (nextChapterHref) {
+    tasks.push(
+      translateChapterTarget(nextChapterHref, {
+        showResult: false,
+        endpoint,
+        apiKey,
+        model,
+        providerLabel,
+        languageLabel,
+        signal: translationAbortController.signal,
+      }),
+    );
+  }
+
+  try {
+    const results = await Promise.all(tasks);
+    const currentResult = results[0];
+    if (options.announceStatus && currentResult.success) {
+      let message = currentResult.fromCache
+        ? `Loaded cached translation via ${providerLabel}.`
+        : `Translated to ${languageLabel} via ${providerLabel} (${model}).`;
+      if (results.length > 1 && results[1].success) {
+        message += ' Prefetched the next chapter in parallel.';
+      }
+      updateTranslationStatus(message);
+    }
+  } finally {
+    if (options.triggeredByUser) {
+      setTranslating(false);
+    }
+  }
+}
+
+async function autoTranslateUpcomingChapter(): Promise<void> {
+  if (!state.autoTranslateEnabled) return;
+  await runChapterTranslationBatch({ announceStatus: false, triggeredByUser: false });
+}
+
+async function translateCurrentView(): Promise<void> {
+  await runChapterTranslationBatch({ announceStatus: true, triggeredByUser: true });
+}
+
 function handleArrowNavigation(event: KeyboardEvent): void {
+  if (event.defaultPrevented) return;
   if (!state.rendition) return;
   if (event.key === 'ArrowRight') {
     event.preventDefault();
@@ -1203,27 +1608,26 @@ function handleArrowNavigation(event: KeyboardEvent): void {
 
 async function showCachedTranslationForCurrentLocation(): Promise<void> {
   if (!state.rendition) {
-    renderTranslationText(null);
+    hideParallelView();
     return;
   }
-  const location = (state.rendition as any)?.currentLocation?.() ?? null;
-  const currentCfi = location?.start?.cfi ?? null;
-  const chapterId = state.currentChapterId ?? extractChapterId(currentCfi);
+  const currentHref = getCurrentChapterReference();
+  const chapterContent = await getChapterTextContent(currentHref);
+  if (chapterContent) {
+    state.lastOriginalParagraphs = chapterContent.paragraphs;
+  } else {
+    state.lastOriginalParagraphs = splitIntoParagraphs(extractVisibleText());
+  }
+  const normalizedChapter = normalizeTocHref(currentHref ?? '') ?? currentHref ?? null;
+  const chapterId = normalizedChapter ? extractChapterId(normalizedChapter) ?? normalizedChapter : null;
   const model = state.customModel.trim() || DEFAULT_MODEL;
   const cacheKey = buildTranslationCacheKey(chapterId, state.targetLanguage, state.provider, model);
   const sessionKey = `${state.libraryEntryId ?? 'session'}::${cacheKey}`;
-  if (sessionTranslationCache.has(sessionKey)) {
-    renderTranslationText(sessionTranslationCache.get(sessionKey) ?? null);
-    return;
-  }
-  if (state.libraryEntryId) {
-    const cached = await loadPersistentTranslation(state.libraryEntryId, cacheKey);
-    renderTranslationText(cached ?? null);
-    if (cached) {
-      sessionTranslationCache.set(sessionKey, cached);
-    }
+  const cached = await readCachedTranslation(cacheKey, sessionKey);
+  if (cached) {
+    renderTranslationText(cached);
   } else {
-    renderTranslationText(null);
+    hideParallelView();
   }
 }
 

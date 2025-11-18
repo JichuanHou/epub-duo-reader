@@ -262,8 +262,8 @@ body.dark {
   background: #fff;
   padding: 2rem 3rem 3rem;
   min-height: 0;
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  display: flex;
+  flex-direction: column;
   gap: 2rem;
   align-items: stretch;
 }
@@ -382,19 +382,6 @@ body.dark {
   transform: translate(-50%, 0);
 }
 
-.translation-panel {
-  width: 100%;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 0.75rem;
-  min-height: 0;
-}
-
-.translation-header {
-  display: none;
-}
-
 .api-key-control input,
 .api-endpoint-control input {
   padding: 0.45rem 0.6rem;
@@ -402,26 +389,59 @@ body.dark {
   border: 1px solid var(--border);
 }
 
-.translation-status,
-.translation-status.error {
-  display: none;
+.translation-status {
+  position: absolute;
+  left: -9999px;
 }
 
-.translation-output {
-  flex: 1;
-  border: none;
-  padding: 0 1rem;
+.parallel-view {
+  position: relative;
+  width: 100%;
+  display: none;
   overflow-y: auto;
+  max-width: 1100px;
+  margin: 0 auto;
+  padding-bottom: 2rem;
+}
+
+.parallel-view:not(.hidden) {
+  display: block;
+}
+
+.parallel-header {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 2rem;
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-bottom: 0.75rem;
+  color: var(--text-muted);
+}
+
+.parallel-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 1.75rem;
+}
+
+.parallel-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 2rem;
+  align-items: start;
+}
+
+.parallel-cell {
   font-size: 1.05rem;
-  line-height: 1.7;
-  background: transparent;
+  line-height: 1.6;
   font-family: 'Merriweather', 'Georgia', serif;
 }
-.translation-output p {
-  margin: 0 0 1.25rem;
-}
-.translation-output p:last-child {
-  margin-bottom: 0;
+
+.parallel-cell p {
+  margin: 0;
+  white-space: pre-line;
+  text-align: justify;
 }
 .reader-controls button {
   width: 40px;
@@ -658,4 +678,15 @@ body.dark {
 .library-actions {
   display: flex;
   justify-content: flex-end;
+}
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
