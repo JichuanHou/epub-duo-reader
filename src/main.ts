@@ -1519,6 +1519,7 @@ interface ChapterTranslationOptions {
   providerLabel: string;
   languageLabel: string;
   signal: AbortSignal;
+  forceRetranslate?: boolean;
 }
 
 async function translateChapterTarget(
@@ -1549,11 +1550,14 @@ async function translateChapterTarget(
     renderParallelColumns(chapterText.paragraphs, text);
   };
 
+  const skipCache = Boolean(options.forceRetranslate);
   const sessionKey = `${state.libraryEntryId ?? 'session'}::${cacheKey}`;
-  const cached = await readCachedTranslation(cacheKey, sessionKey);
-  if (cached) {
-    renderIfNeeded(cached);
-    return { success: true, fromCache: true };
+  if (!skipCache) {
+    const cached = await readCachedTranslation(cacheKey, sessionKey);
+    if (cached) {
+      renderIfNeeded(cached);
+      return { success: true, fromCache: true };
+    }
   }
 
   const payload = {
@@ -1662,6 +1666,7 @@ async function runChapterTranslationBatch(): Promise<void> {
       providerLabel,
       languageLabel,
       signal: controller.signal,
+      forceRetranslate: true,
     });
     if (result.success) {
       const message = result.fromCache

@@ -1383,11 +1383,14 @@ async function translateChapterTarget(target, options) {
         state.lastOriginalParagraphs = chapterText.paragraphs;
         renderParallelColumns(chapterText.paragraphs, text);
     };
+    const skipCache = Boolean(options.forceRetranslate);
     const sessionKey = `${state.libraryEntryId ?? 'session'}::${cacheKey}`;
-    const cached = await readCachedTranslation(cacheKey, sessionKey);
-    if (cached) {
-        renderIfNeeded(cached);
-        return { success: true, fromCache: true };
+    if (!skipCache) {
+        const cached = await readCachedTranslation(cacheKey, sessionKey);
+        if (cached) {
+            renderIfNeeded(cached);
+            return { success: true, fromCache: true };
+        }
     }
     const payload = {
         model: options.model,
@@ -1489,6 +1492,7 @@ async function runChapterTranslationBatch() {
             providerLabel,
             languageLabel,
             signal: controller.signal,
+            forceRetranslate: true,
         });
         if (result.success) {
             const message = result.fromCache
